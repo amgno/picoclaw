@@ -192,19 +192,20 @@ func (d *AgentDefaults) GetModelName() string {
 }
 
 type ChannelsConfig struct {
-	WhatsApp WhatsAppConfig `json:"whatsapp"`
-	Telegram TelegramConfig `json:"telegram"`
-	Feishu   FeishuConfig   `json:"feishu"`
-	Discord  DiscordConfig  `json:"discord"`
-	MaixCam  MaixCamConfig  `json:"maixcam"`
-	QQ       QQConfig       `json:"qq"`
-	DingTalk DingTalkConfig `json:"dingtalk"`
-	Slack    SlackConfig    `json:"slack"`
-	LINE     LINEConfig     `json:"line"`
-	OneBot   OneBotConfig   `json:"onebot"`
-	WeCom    WeComConfig    `json:"wecom"`
-	WeComApp WeComAppConfig `json:"wecom_app"`
-	Pico     PicoConfig     `json:"pico"`
+	WhatsApp   WhatsAppConfig   `json:"whatsapp"`
+	Telegram   TelegramConfig   `json:"telegram"`
+	Feishu     FeishuConfig     `json:"feishu"`
+	Discord    DiscordConfig    `json:"discord"`
+	MaixCam    MaixCamConfig    `json:"maixcam"`
+	QQ         QQConfig         `json:"qq"`
+	DingTalk   DingTalkConfig   `json:"dingtalk"`
+	Slack      SlackConfig      `json:"slack"`
+	LINE       LINEConfig       `json:"line"`
+	OneBot     OneBotConfig     `json:"onebot"`
+	WeCom      WeComConfig      `json:"wecom"`
+	WeComApp   WeComAppConfig   `json:"wecom_app"`
+	WeComAIBot WeComAIBotConfig `json:"wecom_aibot"`
+	Pico       PicoConfig       `json:"pico"`
 }
 
 // GroupTriggerConfig controls when the bot responds in group chats.
@@ -358,6 +359,18 @@ type WeComAppConfig struct {
 	ReplyTimeout       int                 `json:"reply_timeout"           env:"PICOCLAW_CHANNELS_WECOM_APP_REPLY_TIMEOUT"`
 	GroupTrigger       GroupTriggerConfig  `json:"group_trigger,omitempty"`
 	ReasoningChannelID string              `json:"reasoning_channel_id"    env:"PICOCLAW_CHANNELS_WECOM_APP_REASONING_CHANNEL_ID"`
+}
+
+type WeComAIBotConfig struct {
+	Enabled            bool                `json:"enabled"              env:"PICOCLAW_CHANNELS_WECOM_AIBOT_ENABLED"`
+	Token              string              `json:"token"                env:"PICOCLAW_CHANNELS_WECOM_AIBOT_TOKEN"`
+	EncodingAESKey     string              `json:"encoding_aes_key"     env:"PICOCLAW_CHANNELS_WECOM_AIBOT_ENCODING_AES_KEY"`
+	WebhookPath        string              `json:"webhook_path"         env:"PICOCLAW_CHANNELS_WECOM_AIBOT_WEBHOOK_PATH"`
+	AllowFrom          FlexibleStringSlice `json:"allow_from"           env:"PICOCLAW_CHANNELS_WECOM_AIBOT_ALLOW_FROM"`
+	ReplyTimeout       int                 `json:"reply_timeout"        env:"PICOCLAW_CHANNELS_WECOM_AIBOT_REPLY_TIMEOUT"`
+	MaxSteps           int                 `json:"max_steps"            env:"PICOCLAW_CHANNELS_WECOM_AIBOT_MAX_STEPS"`       // Maximum streaming steps
+	WelcomeMessage     string              `json:"welcome_message"      env:"PICOCLAW_CHANNELS_WECOM_AIBOT_WELCOME_MESSAGE"` // Sent on enter_chat event; empty = no welcome
+	ReasoningChannelID string              `json:"reasoning_channel_id" env:"PICOCLAW_CHANNELS_WECOM_AIBOT_REASONING_CHANNEL_ID"`
 }
 
 type PicoConfig struct {
@@ -552,6 +565,7 @@ type ToolsConfig struct {
 	Exec            ExecConfig         `json:"exec"`
 	Skills          SkillsToolsConfig  `json:"skills"`
 	MediaCleanup    MediaCleanupConfig `json:"media_cleanup"`
+	MCP             MCPConfig          `json:"mcp"`
 }
 
 type SkillsToolsConfig struct {
@@ -579,6 +593,34 @@ type ClawHubRegistryConfig struct {
 	Timeout         int    `json:"timeout"           env:"PICOCLAW_SKILLS_REGISTRIES_CLAWHUB_TIMEOUT"`
 	MaxZipSize      int    `json:"max_zip_size"      env:"PICOCLAW_SKILLS_REGISTRIES_CLAWHUB_MAX_ZIP_SIZE"`
 	MaxResponseSize int    `json:"max_response_size" env:"PICOCLAW_SKILLS_REGISTRIES_CLAWHUB_MAX_RESPONSE_SIZE"`
+}
+
+// MCPServerConfig defines configuration for a single MCP server
+type MCPServerConfig struct {
+	// Enabled indicates whether this MCP server is active
+	Enabled bool `json:"enabled"`
+	// Command is the executable to run (e.g., "npx", "python", "/path/to/server")
+	Command string `json:"command"`
+	// Args are the arguments to pass to the command
+	Args []string `json:"args,omitempty"`
+	// Env are environment variables to set for the server process (stdio only)
+	Env map[string]string `json:"env,omitempty"`
+	// EnvFile is the path to a file containing environment variables (stdio only)
+	EnvFile string `json:"env_file,omitempty"`
+	// Type is "stdio", "sse", or "http" (default: stdio if command is set, sse if url is set)
+	Type string `json:"type,omitempty"`
+	// URL is used for SSE/HTTP transport
+	URL string `json:"url,omitempty"`
+	// Headers are HTTP headers to send with requests (sse/http only)
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// MCPConfig defines configuration for all MCP servers
+type MCPConfig struct {
+	// Enabled globally enables/disables MCP integration
+	Enabled bool `json:"enabled" env:"PICOCLAW_TOOLS_MCP_ENABLED"`
+	// Servers is a map of server name to server configuration
+	Servers map[string]MCPServerConfig `json:"servers,omitempty"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -637,7 +679,8 @@ func (c *Config) migrateChannelConfigs() {
 	}
 
 	// OneBot: group_trigger_prefix -> group_trigger.prefixes
-	if len(c.Channels.OneBot.GroupTriggerPrefix) > 0 && len(c.Channels.OneBot.GroupTrigger.Prefixes) == 0 {
+	if len(c.Channels.OneBot.GroupTriggerPrefix) > 0 &&
+		len(c.Channels.OneBot.GroupTrigger.Prefixes) == 0 {
 		c.Channels.OneBot.GroupTrigger.Prefixes = c.Channels.OneBot.GroupTriggerPrefix
 	}
 }
