@@ -8,10 +8,12 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"mime"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -48,14 +50,15 @@ type AgentLoop struct {
 
 // processOptions configures how a message is processed
 type processOptions struct {
-	SessionKey      string // Session identifier for history/context
-	Channel         string // Target channel for tool execution
-	ChatID          string // Target chat ID for tool execution
-	UserMessage     string // User message content (may include prefix)
-	DefaultResponse string // Response when LLM returns empty
-	EnableSummary   bool   // Whether to trigger summarization
-	SendResponse    bool   // Whether to send response via bus
-	NoHistory       bool   // If true, don't load session history (for heartbeat)
+	SessionKey      string   // Session identifier for history/context
+	Channel         string   // Target channel for tool execution
+	ChatID          string   // Target chat ID for tool execution
+	UserMessage     string   // User message content (may include prefix)
+	Media           []string // Media refs (e.g. "media://..." or file paths) attached to the message
+	DefaultResponse string   // Response when LLM returns empty
+	EnableSummary   bool     // Whether to trigger summarization
+	SendResponse    bool     // Whether to send response via bus
+	NoHistory       bool     // If true, don't load session history (for heartbeat)
 }
 
 const defaultResponse = "I've completed processing but have no response to give. Increase `max_tool_iterations` in config.json."
@@ -533,6 +536,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		Channel:         msg.Channel,
 		ChatID:          msg.ChatID,
 		UserMessage:     msg.Content,
+		Media:           msg.Media,
 		DefaultResponse: defaultResponse,
 		EnableSummary:   true,
 		SendResponse:    false,
@@ -628,7 +632,10 @@ func (al *AgentLoop) runAgentLoop(
 	// 1. Update tool contexts
 	al.updateToolContexts(agent, opts.Channel, opts.ChatID)
 
-	// 2. Build messages (skip history for heartbeat)
+	// 2. Resolve media refs to image content blocks
+	imageBlocks := al.resolveMediaToImageBlocks(opts.Media)
+
+	// 3. Build messages (skip history for heartbeat)
 	var history []providers.Message
 	var summary string
 	if !opts.NoHistory {
@@ -639,15 +646,15 @@ func (al *AgentLoop) runAgentLoop(
 		history,
 		summary,
 		opts.UserMessage,
-		nil,
+		imageBlocks,
 		opts.Channel,
 		opts.ChatID,
 	)
 
-	// 3. Save user message to session
+	// 4. Save user message to session
 	agent.Sessions.AddMessage(opts.SessionKey, "user", opts.UserMessage)
 
-	// 4. Run LLM iteration loop
+	// 5. Run LLM iteration loop
 	finalContent, iteration, err := al.runLLMIteration(ctx, agent, messages, opts)
 	if err != nil {
 		return "", err
@@ -656,21 +663,21 @@ func (al *AgentLoop) runAgentLoop(
 	// If last tool had ForUser content and we already sent it, we might not need to send final response
 	// This is controlled by the tool's Silent flag and ForUser content
 
-	// 5. Handle empty response
+	// 6. Handle empty response
 	if finalContent == "" {
 		finalContent = opts.DefaultResponse
 	}
 
-	// 6. Save final assistant message to session
+	// 7. Save final assistant message to session
 	agent.Sessions.AddMessage(opts.SessionKey, "assistant", finalContent)
 	agent.Sessions.Save(opts.SessionKey)
 
-	// 7. Optional: summarization
+	// 8. Optional: summarization
 	if opts.EnableSummary {
 		al.maybeSummarize(agent, opts.SessionKey, opts.Channel, opts.ChatID)
 	}
 
-	// 8. Optional: send response via bus
+	// 9. Optional: send response via bus
 	if opts.SendResponse {
 		al.bus.PublishOutbound(ctx, bus.OutboundMessage{
 			Channel: opts.Channel,
@@ -679,7 +686,7 @@ func (al *AgentLoop) runAgentLoop(
 		})
 	}
 
-	// 9. Log response
+	// 10. Log response
 	responsePreview := utils.Truncate(finalContent, 120)
 	logger.InfoCF("agent", fmt.Sprintf("Response: %s", responsePreview),
 		map[string]any{
@@ -1117,6 +1124,84 @@ func (al *AgentLoop) runLLMIteration(
 	}
 
 	return finalContent, iteration, nil
+}
+
+// resolveMediaToImageBlocks resolves media refs to base64-encoded image content blocks.
+// Non-image media and unresolvable refs are silently skipped.
+func (al *AgentLoop) resolveMediaToImageBlocks(mediaRefs []string) []providers.ContentBlock {
+	if len(mediaRefs) == 0 {
+		return nil
+	}
+
+	var blocks []providers.ContentBlock
+	for _, ref := range mediaRefs {
+		localPath := ref
+		if strings.HasPrefix(ref, "media://") && al.mediaStore != nil {
+			resolved, meta, err := al.mediaStore.ResolveWithMeta(ref)
+			if err != nil {
+				logger.WarnCF("agent", "Failed to resolve media ref", map[string]any{
+					"ref":   ref,
+					"error": err.Error(),
+				})
+				continue
+			}
+			localPath = resolved
+			if inferMediaType(meta.Filename, meta.ContentType) != "image" {
+				continue
+			}
+		}
+
+		ext := strings.ToLower(filepath.Ext(localPath))
+		mediaType := extToMIME(ext)
+		if mediaType == "" {
+			continue
+		}
+
+		data, err := os.ReadFile(localPath)
+		if err != nil {
+			logger.WarnCF("agent", "Failed to read media file", map[string]any{
+				"path":  localPath,
+				"error": err.Error(),
+			})
+			continue
+		}
+
+		encoded := base64Encode(data)
+		blocks = append(blocks, providers.ContentBlock{
+			Type:      "image",
+			ImageData: encoded,
+			MediaType: mediaType,
+		})
+
+		logger.DebugCF("agent", "Resolved media to image block", map[string]any{
+			"ref":        ref,
+			"media_type": mediaType,
+			"size_bytes": len(data),
+		})
+	}
+
+	return blocks
+}
+
+// extToMIME returns the MIME type for common image extensions, or "" if not an image.
+func extToMIME(ext string) string {
+	switch ext {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	default:
+		return ""
+	}
+}
+
+// base64Encode encodes raw bytes to a base64 string.
+func base64Encode(data []byte) string {
+	return base64.StdEncoding.EncodeToString(data)
 }
 
 // updateToolContexts updates the context for tools that need channel/chatID info.

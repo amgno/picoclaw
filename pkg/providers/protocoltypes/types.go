@@ -55,20 +55,25 @@ type CacheControl struct {
 	Type string `json:"type"` // "ephemeral"
 }
 
-// ContentBlock represents a structured segment of a system message.
-// Adapters that understand SystemParts can use these blocks to set
-// per-block cache control (e.g. Anthropic's cache_control: ephemeral).
+// ContentBlock represents a structured segment of a message.
+// Adapters that understand SystemParts/ContentParts can use these blocks to set
+// per-block cache control (e.g. Anthropic's cache_control: ephemeral) or to
+// carry multimodal content (images).
 type ContentBlock struct {
-	Type         string        `json:"type"` // "text"
-	Text         string        `json:"text"`
+	Type         string        `json:"type"` // "text" or "image"
+	Text         string        `json:"text,omitempty"`
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
+	// Image fields (used when Type == "image")
+	ImageData string `json:"image_data,omitempty"` // base64-encoded image bytes
+	MediaType string `json:"media_type,omitempty"` // MIME type, e.g. "image/jpeg"
 }
 
 type Message struct {
 	Role             string         `json:"role"`
 	Content          string         `json:"content"`
 	ReasoningContent string         `json:"reasoning_content,omitempty"`
-	SystemParts      []ContentBlock `json:"system_parts,omitempty"` // structured system blocks for cache-aware adapters
+	SystemParts      []ContentBlock `json:"system_parts,omitempty"`  // structured system blocks for cache-aware adapters
+	ContentParts     []ContentBlock `json:"content_parts,omitempty"` // multimodal content blocks (text + images) for user messages
 	ToolCalls        []ToolCall     `json:"tool_calls,omitempty"`
 	ToolCallID       string         `json:"tool_call_id,omitempty"`
 }

@@ -384,7 +384,7 @@ func (cb *ContextBuilder) BuildMessages(
 	history []providers.Message,
 	summary string,
 	currentMessage string,
-	media []string,
+	imageBlocks []providers.ContentBlock,
 	channel, chatID string,
 ) []providers.Message {
 	messages := []providers.Message{}
@@ -470,12 +470,31 @@ func (cb *ContextBuilder) BuildMessages(
 	// Add conversation history
 	messages = append(messages, history...)
 
-	// Add current user message
+	// Add current user message (with optional image blocks for multimodal input)
 	if strings.TrimSpace(currentMessage) != "" {
-		messages = append(messages, providers.Message{
+		userMsg := providers.Message{
 			Role:    "user",
 			Content: currentMessage,
-		})
+		}
+		if len(imageBlocks) > 0 {
+			parts := []providers.ContentBlock{
+				{Type: "text", Text: currentMessage},
+			}
+			parts = append(parts, imageBlocks...)
+			userMsg.ContentParts = parts
+		}
+		messages = append(messages, userMsg)
+	} else if len(imageBlocks) > 0 {
+		userMsg := providers.Message{
+			Role:    "user",
+			Content: "[image]",
+		}
+		parts := []providers.ContentBlock{
+			{Type: "text", Text: "The user sent the following image(s):"},
+		}
+		parts = append(parts, imageBlocks...)
+		userMsg.ContentParts = parts
+		messages = append(messages, userMsg)
 	}
 
 	return messages
