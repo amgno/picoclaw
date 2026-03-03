@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "aldo" ]
 
 jobs:
   build:
@@ -17,4 +17,4 @@ jobs:
           go-version-file: go.mod
 
       - name: Build
-        run: make build-all
+        run: make build

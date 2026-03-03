@@ -95,6 +95,13 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 			cfg.RequestTimeout,
 		), modelID, nil
 
+	case "lmstudio":
+		apiBase := cfg.APIBase
+		if apiBase == "" {
+			apiBase = getDefaultAPIBase(protocol)
+		}
+		return NewLMStudioProvider(cfg.APIKey, apiBase, cfg.Proxy), modelID, nil
+
 	case "litellm", "openrouter", "groq", "zhipu", "gemini", "nvidia",
 		"ollama", "moonshot", "shengsuanyun", "deepseek", "cerebras",
 		"volcengine", "vllm", "qwen", "mistral":
@@ -179,6 +186,8 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 // getDefaultAPIBase returns the default API base URL for a given protocol.
 func getDefaultAPIBase(protocol string) string {
 	switch protocol {
+	case "lmstudio":
+		return "http://localhost:1234"
 	case "openai":
 		return "https://api.openai.com/v1"
 	case "openrouter":

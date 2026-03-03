@@ -168,6 +168,18 @@ func buildParams(
 				anthropicMessages = append(anthropicMessages,
 					anthropic.NewUserMessage(anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, false)),
 				)
+			} else if len(msg.Media) > 0 {
+				var blocks []anthropic.ContentBlockParamUnion
+				if msg.Content != "" {
+					blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
+				}
+				for _, dataURL := range msg.Media {
+					mediaType, b64Data := parseDataURL(dataURL)
+					if mediaType != "" && b64Data != "" {
+						blocks = append(blocks, anthropic.NewImageBlockBase64(mediaType, b64Data))
+					}
+				}
+				anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(blocks...))
 			} else {
 				anthropicMessages = append(anthropicMessages,
 					anthropic.NewUserMessage(anthropic.NewTextBlock(msg.Content)),
@@ -310,6 +322,21 @@ func parseResponse(resp *anthropic.Message) *LLMResponse {
 			CacheReadTokens:    int(resp.Usage.CacheReadInputTokens),
 		},
 	}
+}
+
+// parseDataURL splits a "data:<mime>;base64,<data>" URL into its MIME type and
+// base64 payload. Returns empty strings if the URL is not a valid data URL.
+func parseDataURL(dataURL string) (mimeType, b64Data string) {
+	const prefix = "data:"
+	if !strings.HasPrefix(dataURL, prefix) {
+		return "", ""
+	}
+	rest := dataURL[len(prefix):]
+	semi := strings.Index(rest, ";base64,")
+	if semi < 0 {
+		return "", ""
+	}
+	return rest[:semi], rest[semi+len(";base64,"):]
 }
 
 func normalizeBaseURL(apiBase string) string {
