@@ -116,7 +116,7 @@ func (p *Provider) Chat(
 
 	requestBody := map[string]any{
 		"model":    model,
-		"messages": stripSystemParts(messages),
+		"messages": serializeMessages(messages),
 	}
 
 	if len(tools) > 0 {
@@ -286,7 +286,7 @@ func parseResponse(body []byte) (*LLMResponse, error) {
 }
 
 // openaiMessage is the wire-format message for OpenAI-compatible APIs.
-// It mirrors protocoltypes.Message but omits SystemParts/ContentParts, which are
+// It mirrors protocoltypes.Message but omits SystemParts, which are
 // internal fields that would be unknown to third-party endpoints.
 // Content is any so it can be either a string or an array of content blocks
 // (for multimodal messages with images).
@@ -298,49 +298,55 @@ type openaiMessage struct {
 	ToolCallID       string     `json:"tool_call_id,omitempty"`
 }
 
-// openaiContentPart represents a part of a multimodal content array
-// in the OpenAI vision API format.
-type openaiContentPart struct {
-	Type     string              `json:"type"`
-	Text     string              `json:"text,omitempty"`
-	ImageURL *openaiImageURLPart `json:"image_url,omitempty"`
-}
-
-type openaiImageURLPart struct {
-	URL string `json:"url"`
-}
-
-// stripSystemParts converts []Message to []openaiMessage, dropping internal fields
-// and converting multimodal ContentParts to the OpenAI vision format.
-func stripSystemParts(messages []Message) []openaiMessage {
-	out := make([]openaiMessage, len(messages))
-	for i, m := range messages {
-		var content any
-		if len(m.ContentParts) > 0 && m.Role == "user" {
-			parts := make([]openaiContentPart, 0, len(m.ContentParts))
-			for _, p := range m.ContentParts {
-				switch p.Type {
-				case "text":
-					parts = append(parts, openaiContentPart{Type: "text", Text: p.Text})
-				case "image":
-					dataURL := "data:" + p.MediaType + ";base64," + p.ImageData
-					parts = append(parts, openaiContentPart{
-						Type:     "image_url",
-						ImageURL: &openaiImageURLPart{URL: dataURL},
-					})
-				}
-			}
-			content = parts
-		} else {
-			content = m.Content
+// serializeMessages converts internal Message structs to the OpenAI wire format.
+// - Strips SystemParts (unknown to third-party endpoints)
+// - Converts messages with Media to multipart content format (text + image_url parts)
+// - Preserves ToolCallID, ToolCalls, and ReasoningContent for all messages
+func serializeMessages(messages []Message) []any {
+	out := make([]any, 0, len(messages))
+	for _, m := range messages {
+		if len(m.Media) == 0 {
+			out = append(out, openaiMessage{
+				Role:             m.Role,
+				Content:          m.Content,
+				ReasoningContent: m.ReasoningContent,
+				ToolCalls:        m.ToolCalls,
+				ToolCallID:       m.ToolCallID,
+			})
+			continue
 		}
-		out[i] = openaiMessage{
-			Role:             m.Role,
-			Content:          content,
-			ReasoningContent: m.ReasoningContent,
-			ToolCalls:        m.ToolCalls,
-			ToolCallID:       m.ToolCallID,
+
+		// Multipart content format for messages with media
+		parts := make([]map[string]any, 0, 1+len(m.Media))
+		if m.Content != "" {
+			parts = append(parts, map[string]any{
+				"type": "text",
+				"text": m.Content,
+			})
 		}
+		for _, mediaURL := range m.Media {
+			parts = append(parts, map[string]any{
+				"type": "image_url",
+				"image_url": map[string]any{
+					"url": mediaURL,
+				},
+			})
+		}
+
+		msg := map[string]any{
+			"role":    m.Role,
+			"content": parts,
+		}
+		if m.ToolCallID != "" {
+			msg["tool_call_id"] = m.ToolCallID
+		}
+		if len(m.ToolCalls) > 0 {
+			msg["tool_calls"] = m.ToolCalls
+		}
+		if m.ReasoningContent != "" {
+			msg["reasoning_content"] = m.ReasoningContent
+		}
+		out = append(out, msg)
 	}
 	return out
 }

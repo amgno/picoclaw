@@ -8,12 +8,10 @@ package agent
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"mime"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -54,7 +52,7 @@ type processOptions struct {
 	Channel         string   // Target channel for tool execution
 	ChatID          string   // Target chat ID for tool execution
 	UserMessage     string   // User message content (may include prefix)
-	Media           []string // Media refs (e.g. "media://..." or file paths) attached to the message
+	Media           []string // media:// refs from inbound message
 	DefaultResponse string   // Response when LLM returns empty
 	EnableSummary   bool     // Whether to trigger summarization
 	SendResponse    bool     // Whether to send response via bus
@@ -633,10 +631,7 @@ func (al *AgentLoop) runAgentLoop(
 	// 1. Update tool contexts
 	al.updateToolContexts(agent, opts.Channel, opts.ChatID)
 
-	// 2. Resolve media refs to image content blocks
-	imageBlocks := al.resolveMediaToImageBlocks(opts.Media)
-
-	// 3. Build messages (skip history for heartbeat)
+	// 2. Build messages (skip history for heartbeat)
 	var history []providers.Message
 	var summary string
 	if !opts.NoHistory {
@@ -647,10 +642,14 @@ func (al *AgentLoop) runAgentLoop(
 		history,
 		summary,
 		opts.UserMessage,
-		imageBlocks,
+		opts.Media,
 		opts.Channel,
 		opts.ChatID,
 	)
+
+	// Resolve media:// refs to base64 data URLs (streaming)
+	maxMediaSize := al.cfg.Agents.Defaults.GetMaxMediaSize()
+	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
 
 	// 4. Save user message to session
 	agent.Sessions.AddMessage(opts.SessionKey, "user", opts.UserMessage)
@@ -1125,84 +1124,6 @@ func (al *AgentLoop) runLLMIteration(
 	}
 
 	return finalContent, iteration, nil
-}
-
-// resolveMediaToImageBlocks resolves media refs to base64-encoded image content blocks.
-// Non-image media and unresolvable refs are silently skipped.
-func (al *AgentLoop) resolveMediaToImageBlocks(mediaRefs []string) []providers.ContentBlock {
-	if len(mediaRefs) == 0 {
-		return nil
-	}
-
-	var blocks []providers.ContentBlock
-	for _, ref := range mediaRefs {
-		localPath := ref
-		if strings.HasPrefix(ref, "media://") && al.mediaStore != nil {
-			resolved, meta, err := al.mediaStore.ResolveWithMeta(ref)
-			if err != nil {
-				logger.WarnCF("agent", "Failed to resolve media ref", map[string]any{
-					"ref":   ref,
-					"error": err.Error(),
-				})
-				continue
-			}
-			localPath = resolved
-			if inferMediaType(meta.Filename, meta.ContentType) != "image" {
-				continue
-			}
-		}
-
-		ext := strings.ToLower(filepath.Ext(localPath))
-		mediaType := extToMIME(ext)
-		if mediaType == "" {
-			continue
-		}
-
-		data, err := os.ReadFile(localPath)
-		if err != nil {
-			logger.WarnCF("agent", "Failed to read media file", map[string]any{
-				"path":  localPath,
-				"error": err.Error(),
-			})
-			continue
-		}
-
-		encoded := base64Encode(data)
-		blocks = append(blocks, providers.ContentBlock{
-			Type:      "image",
-			ImageData: encoded,
-			MediaType: mediaType,
-		})
-
-		logger.DebugCF("agent", "Resolved media to image block", map[string]any{
-			"ref":        ref,
-			"media_type": mediaType,
-			"size_bytes": len(data),
-		})
-	}
-
-	return blocks
-}
-
-// extToMIME returns the MIME type for common image extensions, or "" if not an image.
-func extToMIME(ext string) string {
-	switch ext {
-	case ".jpg", ".jpeg":
-		return "image/jpeg"
-	case ".png":
-		return "image/png"
-	case ".gif":
-		return "image/gif"
-	case ".webp":
-		return "image/webp"
-	default:
-		return ""
-	}
-}
-
-// base64Encode encodes raw bytes to a base64 string.
-func base64Encode(data []byte) string {
-	return base64.StdEncoding.EncodeToString(data)
 }
 
 // updateToolContexts updates the context for tools that need channel/chatID info.

@@ -168,17 +168,6 @@ func buildParams(
 				anthropicMessages = append(anthropicMessages,
 					anthropic.NewUserMessage(anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, false)),
 				)
-			} else if len(msg.ContentParts) > 0 {
-				var blocks []anthropic.ContentBlockParamUnion
-				for _, part := range msg.ContentParts {
-					switch part.Type {
-					case "text":
-						blocks = append(blocks, anthropic.NewTextBlock(part.Text))
-					case "image":
-						blocks = append(blocks, anthropic.NewImageBlockBase64(part.MediaType, part.ImageData))
-					}
-				}
-				anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(blocks...))
 			} else {
 				anthropicMessages = append(anthropicMessages,
 					anthropic.NewUserMessage(anthropic.NewTextBlock(msg.Content)),
