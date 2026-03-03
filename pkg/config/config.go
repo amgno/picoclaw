@@ -237,6 +237,7 @@ type WhatsAppConfig struct {
 type TelegramConfig struct {
 	Enabled            bool                `json:"enabled"                 env:"PICOCLAW_CHANNELS_TELEGRAM_ENABLED"`
 	Token              string              `json:"token"                   env:"PICOCLAW_CHANNELS_TELEGRAM_TOKEN"`
+	BaseURL            string              `json:"base_url"                env:"PICOCLAW_CHANNELS_TELEGRAM_BASE_URL"`
 	Proxy              string              `json:"proxy"                   env:"PICOCLAW_CHANNELS_TELEGRAM_PROXY"`
 	AllowFrom          FlexibleStringSlice `json:"allow_from"              env:"PICOCLAW_CHANNELS_TELEGRAM_ALLOW_FROM"`
 	GroupTrigger       GroupTriggerConfig  `json:"group_trigger,omitempty"`
@@ -399,6 +400,7 @@ type DevicesConfig struct {
 type ProvidersConfig struct {
 	Anthropic     ProviderConfig       `json:"anthropic"`
 	OpenAI        OpenAIProviderConfig `json:"openai"`
+	LiteLLM       ProviderConfig       `json:"litellm"`
 	OpenRouter    ProviderConfig       `json:"openrouter"`
 	Groq          ProviderConfig       `json:"groq"`
 	Zhipu         ProviderConfig       `json:"zhipu"`
@@ -422,6 +424,7 @@ type ProvidersConfig struct {
 func (p ProvidersConfig) IsEmpty() bool {
 	return p.Anthropic.APIKey == "" && p.Anthropic.APIBase == "" &&
 		p.OpenAI.APIKey == "" && p.OpenAI.APIBase == "" &&
+		p.LiteLLM.APIKey == "" && p.LiteLLM.APIBase == "" &&
 		p.OpenRouter.APIKey == "" && p.OpenRouter.APIBase == "" &&
 		p.Groq.APIKey == "" && p.Groq.APIBase == "" &&
 		p.Zhipu.APIKey == "" && p.Zhipu.APIBase == "" &&
