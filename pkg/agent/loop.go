@@ -1086,10 +1086,20 @@ func (al *AgentLoop) runLLMIteration(
 				})
 			}
 
-			// Determine content for LLM based on tool result
+			// Determine content for LLM based on tool result.
+			// Prefix errors with [ERROR] so the LLM can clearly distinguish failures.
 			contentForLLM := toolResult.ForLLM
 			if contentForLLM == "" && toolResult.Err != nil {
 				contentForLLM = toolResult.Err.Error()
+			}
+			if contentForLLM == "" {
+				if toolResult.IsError {
+					contentForLLM = "[ERROR] Tool execution failed with no output."
+				} else {
+					contentForLLM = "[OK] Tool executed successfully with no output."
+				}
+			} else if toolResult.IsError && !strings.HasPrefix(contentForLLM, "[ERROR]") {
+				contentForLLM = "[ERROR] " + contentForLLM
 			}
 
 			toolResultMsg := providers.Message{
@@ -1157,9 +1167,32 @@ func (al *AgentLoop) maybeSummarize(agent *AgentInstance, sessionKey, channel, c
 	tokenEstimate := al.estimateTokens(newHistory)
 	threshold := agent.ContextWindow * agent.SummarizeTokenPercent / 100
 
+	// Warn user when approaching summarization threshold (80% of message or token limit)
+	warnMsgThreshold := agent.SummarizeMessageThreshold * 80 / 100
+	warnTokenThreshold := threshold * 80 / 100
+	if (len(newHistory) > warnMsgThreshold || tokenEstimate > warnTokenThreshold) &&
+		(len(newHistory) <= agent.SummarizeMessageThreshold && tokenEstimate <= threshold) {
+		if channel != "" && !constants.IsInternalChannel(channel) {
+			pct := tokenEstimate * 100 / agent.ContextWindow
+			al.bus.PublishOutbound(context.Background(), bus.OutboundMessage{
+				Channel: channel,
+				ChatID:  chatID,
+				Content: fmt.Sprintf("⚠️ Context al %d%% (%d messaggi). La conversazione verrà riassunta a breve per liberare spazio.", pct, len(newHistory)),
+			})
+		}
+	}
+
 	if len(newHistory) > agent.SummarizeMessageThreshold || tokenEstimate > threshold {
 		summarizeKey := agent.ID + ":" + sessionKey
 		if _, loading := al.summarizing.LoadOrStore(summarizeKey, true); !loading {
+			// Notify user that summarization is starting
+			if channel != "" && !constants.IsInternalChannel(channel) {
+				al.bus.PublishOutbound(context.Background(), bus.OutboundMessage{
+					Channel: channel,
+					ChatID:  chatID,
+					Content: "🔄 Riassumendo la conversazione per ottimizzare il contesto...",
+				})
+			}
 			go func() {
 				defer al.summarizing.Delete(summarizeKey)
 				logger.Debug("Memory threshold reached. Optimizing conversation history...")

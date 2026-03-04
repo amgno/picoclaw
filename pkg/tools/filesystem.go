@@ -210,11 +210,59 @@ func (t *WriteFileTool) Execute(ctx context.Context, args map[string]any) *ToolR
 		return ErrorResult("content is required")
 	}
 
+	if isProtectedFile(path) {
+		if result := protectedFileGuard(t.fs, path, content); result != nil {
+			return result
+		}
+	}
+
 	if err := t.fs.WriteFile(path, []byte(content)); err != nil {
 		return ErrorResult(err.Error())
 	}
 
 	return SilentResult(fmt.Sprintf("File written: %s", path))
+}
+
+// isProtectedFile returns true for files that deserve extra write protection.
+func isProtectedFile(path string) bool {
+	base := strings.ToUpper(filepath.Base(path))
+	protected := []string{"MEMORY.MD", "AGENTS.MD", "SOUL.MD", "USER.MD", "IDENTITY.MD"}
+	for _, p := range protected {
+		if base == p {
+			return true
+		}
+	}
+	return false
+}
+
+// protectedFileGuard prevents accidental data loss on important files.
+// It rejects empty writes and creates a backup before significant overwrites.
+func protectedFileGuard(fsys fileSystem, path string, newContent string) *ToolResult {
+	if strings.TrimSpace(newContent) == "" {
+		return ErrorResult(fmt.Sprintf(
+			"REFUSED: cannot write empty content to protected file %s. Use edit_file to make targeted changes instead of overwriting the entire file.",
+			filepath.Base(path)))
+	}
+
+	existing, err := fsys.ReadFile(path)
+	if err != nil || len(existing) == 0 {
+		return nil
+	}
+
+	existingLen := len(strings.TrimSpace(string(existing)))
+	newLen := len(strings.TrimSpace(newContent))
+
+	if existingLen > 100 && newLen < existingLen/3 {
+		return ErrorResult(fmt.Sprintf(
+			"REFUSED: new content (%d chars) is less than 1/3 of existing content (%d chars) in %s. This looks like accidental data loss. Use edit_file instead for targeted changes, or use append_file to add new content.",
+			newLen, existingLen, filepath.Base(path)))
+	}
+
+	// Create timestamped backup before overwriting
+	backupPath := path + fmt.Sprintf(".backup-%s", time.Now().Format("20060102-150405"))
+	_ = fsys.WriteFile(backupPath, existing)
+
+	return nil
 }
 
 type ListDirTool struct {

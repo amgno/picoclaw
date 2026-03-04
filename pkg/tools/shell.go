@@ -287,9 +287,26 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult
 	}
 }
 
+// protectedFileNames that should never be deleted or truncated via exec.
+var protectedFileNames = []string{
+	"memory.md", "memory/memory.md",
+	"agents.md", "soul.md", "user.md", "identity.md",
+}
+
 func (t *ExecTool) guardCommand(command, cwd string) string {
 	cmd := strings.TrimSpace(command)
 	lower := strings.ToLower(cmd)
+
+	// Block rm/mv/truncation targeting protected files.
+	for _, pf := range protectedFileNames {
+		if (strings.Contains(lower, "rm ") || strings.Contains(lower, "rm\t")) &&
+			strings.Contains(lower, pf) {
+			return fmt.Sprintf("Command blocked: cannot delete protected file %s. Use edit_file for modifications.", pf)
+		}
+		if strings.Contains(lower, "> ") && strings.Contains(lower, pf) {
+			return fmt.Sprintf("Command blocked: cannot truncate protected file %s.", pf)
+		}
+	}
 
 	// Custom allow patterns exempt a command from deny checks.
 	explicitlyAllowed := false
