@@ -27,6 +27,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/identity"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -35,6 +36,11 @@ const (
 	defaultDBPath       = "~/Library/Messages/chat.db"
 	maxMessageLength    = 10000
 )
+
+type attachmentInfo struct {
+	path     string
+	mimeType string
+}
 
 type IMessageChannel struct {
 	*channels.BaseChannel
@@ -265,16 +271,6 @@ func (c *IMessageChannel) pollNewMessages() {
 			text = extractTextFromAttributedBody(attributedBody)
 		}
 
-		if text == "" {
-			logger.InfoCF("imessage", "Skipping message with no text content", map[string]any{
-				"rowid":          rowID,
-				"sender":         senderID,
-				"has_text":       textRaw.Valid,
-				"has_attr_body":  len(attributedBody) > 0,
-			})
-			continue
-		}
-
 		if senderID == "" {
 			logger.InfoCF("imessage", "Skipping message with no sender", map[string]any{
 				"rowid": rowID,
@@ -285,6 +281,35 @@ func (c *IMessageChannel) pollNewMessages() {
 		chatID := chatIdentifier
 		if chatID == "" {
 			chatID = senderID
+		}
+
+		messageIDStr := fmt.Sprintf("%d", rowID)
+
+		// Fetch image attachments and register with media store
+		var mediaPaths []string
+		attachments := c.fetchImageAttachments(rowID)
+		if len(attachments) > 0 {
+			scope := channels.BuildMediaScope("imessage", chatID, messageIDStr)
+			for _, att := range attachments {
+				ref := c.storeAttachment(att, scope)
+				if ref != "" {
+					mediaPaths = append(mediaPaths, ref)
+					if text != "" {
+						text += "\n"
+					}
+					text += "[image: photo]"
+				}
+			}
+		}
+
+		if text == "" {
+			logger.InfoCF("imessage", "Skipping message with no text and no media", map[string]any{
+				"rowid":         rowID,
+				"sender":        senderID,
+				"has_text":      textRaw.Valid,
+				"has_attr_body": len(attributedBody) > 0,
+			})
+			continue
 		}
 
 		isGroup := strings.HasPrefix(chatIdentifier, "chat")
@@ -314,13 +339,15 @@ func (c *IMessageChannel) pollNewMessages() {
 		}
 
 		logger.InfoCF("imessage", "Received message", map[string]any{
-			"rowid":   rowID,
-			"sender":  senderID,
-			"chat_id": chatID,
-			"preview": utils.Truncate(text, 80),
+			"rowid":      rowID,
+			"sender":     senderID,
+			"chat_id":    chatID,
+			"preview":    utils.Truncate(text, 80),
+			"has_images": len(mediaPaths) > 0,
+			"num_images": len(mediaPaths),
 		})
 
-		c.HandleMessage(c.ctx, peer, fmt.Sprintf("%d", rowID), senderID, chatID, text, nil, metadata, sender)
+		c.HandleMessage(c.ctx, peer, messageIDStr, senderID, chatID, text, mediaPaths, metadata, sender)
 	}
 
 	if count > 0 {
@@ -329,6 +356,175 @@ func (c *IMessageChannel) pollNewMessages() {
 			"last_rowid":   c.lastRowID,
 		})
 	}
+}
+
+// fetchImageAttachments queries the iMessage database for image attachments
+// associated with a given message ROWID. Only attachments whose file exists
+// on disk are returned.
+func (c *IMessageChannel) fetchImageAttachments(messageROWID int64) []attachmentInfo {
+	query := `
+		SELECT
+			COALESCE(a.filename, '') as filename,
+			COALESCE(a.mime_type, '') as mime_type,
+			COALESCE(a.uti, '') as uti
+		FROM attachment a
+		JOIN message_attachment_join maj ON a.ROWID = maj.attachment_id
+		WHERE maj.message_id = ?
+	`
+
+	rows, err := c.db.QueryContext(c.ctx, query, messageROWID)
+	if err != nil {
+		if c.ctx.Err() == nil {
+			logger.ErrorCF("imessage", "Failed to query attachments", map[string]any{
+				"error":      err.Error(),
+				"message_id": messageROWID,
+			})
+		}
+		return nil
+	}
+	defer rows.Close()
+
+	var result []attachmentInfo
+	for rows.Next() {
+		var filename, mimeType, uti string
+		if err := rows.Scan(&filename, &mimeType, &uti); err != nil {
+			continue
+		}
+
+		if !isImageType(mimeType, uti) {
+			continue
+		}
+
+		resolved := expandHome(filename)
+		if _, err := os.Stat(resolved); err != nil {
+			logger.DebugCF("imessage", "Attachment file not accessible", map[string]any{
+				"path":       resolved,
+				"message_id": messageROWID,
+			})
+			continue
+		}
+
+		if mimeType == "" {
+			mimeType = mimeFromUTI(uti)
+		}
+
+		// Convert unsupported formats (HEIC, TIFF, etc.) to JPEG
+		if needsConversion(mimeType) {
+			converted, err := convertToJPEG(c.ctx, resolved)
+			if err != nil {
+				logger.WarnCF("imessage", "Image conversion failed, skipping", map[string]any{
+					"path":      resolved,
+					"mime_type": mimeType,
+					"error":     err.Error(),
+				})
+				continue
+			}
+			resolved = converted
+			mimeType = "image/jpeg"
+		}
+
+		result = append(result, attachmentInfo{
+			path:     resolved,
+			mimeType: mimeType,
+		})
+	}
+
+	return result
+}
+
+func isImageType(mimeType, uti string) bool {
+	if strings.HasPrefix(mimeType, "image/") {
+		return true
+	}
+	switch uti {
+	case "public.jpeg", "public.png", "public.heic", "public.heif",
+		"public.tiff", "com.compuserve.gif", "org.webmproject.webp",
+		"public.image", "com.apple.pict":
+		return true
+	}
+	return false
+}
+
+func mimeFromUTI(uti string) string {
+	switch uti {
+	case "public.jpeg":
+		return "image/jpeg"
+	case "public.png":
+		return "image/png"
+	case "public.heic", "public.heif":
+		return "image/heic"
+	case "public.tiff":
+		return "image/tiff"
+	case "com.compuserve.gif":
+		return "image/gif"
+	case "org.webmproject.webp":
+		return "image/webp"
+	default:
+		return "image/jpeg"
+	}
+}
+
+var supportedMIMETypes = map[string]bool{
+	"image/jpeg": true,
+	"image/png":  true,
+	"image/gif":  true,
+	"image/webp": true,
+}
+
+func needsConversion(mimeType string) bool {
+	return !supportedMIMETypes[mimeType]
+}
+
+// convertToJPEG converts an image to JPEG using macOS built-in sips.
+func convertToJPEG(ctx context.Context, srcPath string) (string, error) {
+	stageDir := filepath.Join(os.TempDir(), "picoclaw-media")
+	if err := os.MkdirAll(stageDir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir: %w", err)
+	}
+
+	base := strings.TrimSuffix(filepath.Base(srcPath), filepath.Ext(srcPath))
+	dstPath := filepath.Join(stageDir, fmt.Sprintf("%s_%d.jpeg", base, time.Now().UnixMilli()))
+
+	cmd := exec.CommandContext(ctx, "sips", "-s", "format", "jpeg", "-s", "formatOptions", "85", srcPath, "--out", dstPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("sips: %s — %w", strings.TrimSpace(string(output)), err)
+	}
+
+	if _, err := os.Stat(dstPath); err != nil {
+		return "", fmt.Errorf("converted file missing: %w", err)
+	}
+
+	logger.DebugCF("imessage", "Converted image to JPEG", map[string]any{
+		"src": srcPath,
+		"dst": dstPath,
+	})
+
+	return dstPath, nil
+}
+
+// storeAttachment registers an image attachment with the media store and
+// returns a media ref (or the raw path as fallback).
+func (c *IMessageChannel) storeAttachment(att attachmentInfo, scope string) string {
+	store := c.GetMediaStore()
+	if store == nil {
+		return att.path
+	}
+
+	filename := filepath.Base(att.path)
+	ref, err := store.Store(att.path, media.MediaMeta{
+		Filename:    filename,
+		ContentType: att.mimeType,
+		Source:      "imessage",
+	}, scope)
+	if err != nil {
+		logger.ErrorCF("imessage", "Failed to store attachment", map[string]any{
+			"path":  att.path,
+			"error": err.Error(),
+		})
+		return att.path
+	}
+
+	return ref
 }
 
 // sendViaAppleScript sends a message using osascript and AppleScript.
