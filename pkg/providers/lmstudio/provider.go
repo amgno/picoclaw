@@ -371,9 +371,19 @@ func mapRestResponse(r *restResponse) *LLMResponse {
 		}
 	}
 
+	contentStr := content.String()
+	reasoningStr := reasoning.String()
+
+	// Strip <think> tags from content when the REST API doesn't separate them.
+	if reasoningStr == "" {
+		var extracted string
+		contentStr, extracted = protocoltypes.ExtractThinkContent(contentStr)
+		reasoningStr = extracted
+	}
+
 	return &LLMResponse{
-		Content:          content.String(),
-		ReasoningContent: reasoning.String(),
+		Content:          contentStr,
+		ReasoningContent: reasoningStr,
 		FinishReason:     "stop",
 		Usage: &UsageInfo{
 			PromptTokens:     r.Stats.InputTokens,

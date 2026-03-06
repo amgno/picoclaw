@@ -274,10 +274,20 @@ func parseResponse(body []byte) (*LLMResponse, error) {
 		toolCalls = append(toolCalls, toolCall)
 	}
 
+	content := choice.Message.Content
+	reasoning := choice.Message.Reasoning
+
+	// Many open-source models (Qwen 3, DeepSeek R1, etc.) embed reasoning
+	// inside <think> tags in the content field. Extract and move it to
+	// the Reasoning field so it can be handled separately.
+	if reasoning == "" && choice.Message.ReasoningContent == "" {
+		content, reasoning = protocoltypes.ExtractThinkContent(content)
+	}
+
 	return &LLMResponse{
-		Content:          choice.Message.Content,
+		Content:          content,
 		ReasoningContent: choice.Message.ReasoningContent,
-		Reasoning:        choice.Message.Reasoning,
+		Reasoning:        reasoning,
 		ReasoningDetails: choice.Message.ReasoningDetails,
 		ToolCalls:        toolCalls,
 		FinishReason:     choice.FinishReason,
@@ -365,7 +375,7 @@ func normalizeModel(model, apiBase string) string {
 
 	prefix := strings.ToLower(before)
 	switch prefix {
-	case "litellm", "moonshot", "nvidia", "groq", "ollama", "deepseek", "google", "openrouter", "zhipu", "mistral":
+	case "litellm", "moonshot", "nvidia", "groq", "ollama", "deepseek", "google", "openrouter", "zhipu", "mistral", "xai":
 		return after
 	default:
 		return model
